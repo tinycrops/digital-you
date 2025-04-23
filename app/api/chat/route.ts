@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import fs from 'fs';
 import path from 'path';
 import { GoogleGenerativeAI } from '@google/generative-ai';
+import { ChromaClient, DefaultEmbeddingFunction } from 'chromadb';
 
 // Initialize the Gemini AI with the API key
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
@@ -9,52 +10,23 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
 // Function to get relevant transcripts based on the query
 async function getRelevantTranscripts(query: string, limit = 5) {
   try {
-    const datasetPath = process.env.NEXT_PUBLIC_VIDEO_DATASET_PATH || '../video-dataset';
-    const files = fs.readdirSync(datasetPath)
-      .filter(file => file.endsWith('.json'));
-    
-    // Load all transcripts
-    const transcripts = files.map(file => {
-      const filePath = path.join(datasetPath, file);
-      const data = fs.readFileSync(filePath, 'utf8');
-      const json = JSON.parse(data);
-      
-      return {
-        id: json.id || file.replace('.json', ''),
-        filename: file.replace('.json', ''),
-        transcript: json.analysis?.transcript || '',
-        summary: json.analysis?.summary || '',
-        topics: json.analysis?.topics || [],
-        insights: json.inferred_insights || [],
-        timestamp: file.replace('.json', '')
-      };
-    });
-    
-    // Simple keyword matching for now (in a production app, we'd use embeddings and cosine similarity)
-    const queryTerms = query.toLowerCase().split(' ');
-    
-    // Score each transcript based on term frequency
-    const scoredTranscripts = transcripts.map(transcript => {
-      let score = 0;
-      const text = (transcript.transcript + ' ' + transcript.summary + ' ' + transcript.topics.join(' ')).toLowerCase();
-      
-      queryTerms.forEach(term => {
-        const regex = new RegExp(term, 'g');
-        const matches = text.match(regex);
-        if (matches) {
-          score += matches.length;
-        }
-      });
-      
-      return { ...transcript, score };
-    });
-    
-    // Sort by score and take the top results
-    return scoredTranscripts
-      .sort((a, b) => b.score - a.score)
-      .slice(0, limit);
+    const chroma = new ChromaClient({ path: process.env.CHROMADB_URL });
+    const embedder = new DefaultEmbeddingFunction();
+    const collection = await chroma.getCollection({ name: 'videos', embeddingFunction: embedder });
+    const results = await collection.query({ queryTexts: [query], nResults: limit });
+    // Map results to the expected transcript format
+    return (results.documents[0] || []).map((doc, i) => ({
+      id: results.ids[0][i],
+      filename: results.metadatas[0][i]?.filename,
+      transcript: results.metadatas[0][i]?.transcript,
+      summary: results.metadatas[0][i]?.summary,
+      topics: results.metadatas[0][i]?.topics || [],
+      insights: results.metadatas[0][i]?.insights || [],
+      timestamp: results.metadatas[0][i]?.filename?.replace('.json', ''),
+      score: results.distances[0][i]
+    }));
   } catch (error) {
-    console.error('Error getting relevant transcripts:', error);
+    console.error('Error getting relevant transcripts from ChromaDB:', error);
     return [];
   }
 }

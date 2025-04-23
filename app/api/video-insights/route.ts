@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import fs from 'fs';
 import path from 'path';
 import { GoogleGenerativeAI } from '@google/generative-ai';
+import { ChromaClient, DefaultEmbeddingFunction } from 'chromadb';
 
 // Initialize the Gemini AI with the API key
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
@@ -17,20 +18,17 @@ export async function POST(request: NextRequest) {
       );
     }
     
-    // Get the video dataset path from env
-    const datasetPath = process.env.NEXT_PUBLIC_VIDEO_DATASET_PATH || '../video-dataset';
-    
-    // Get the video data
-    const jsonPath = path.join(datasetPath, `${videoId}.json`);
-    
-    if (!fs.existsSync(jsonPath)) {
+    const chroma = new ChromaClient({ path: process.env.CHROMADB_URL });
+    const embedder = new DefaultEmbeddingFunction();
+    const collection = await chroma.getCollection({ name: 'videos', embeddingFunction: embedder });
+    const results = await collection.get({ ids: [videoId] });
+    if (!results || !results.metadatas || !results.metadatas[0]) {
       return NextResponse.json(
-        { error: 'Video data not found' },
+        { error: 'Video data not found in ChromaDB' },
         { status: 404 }
       );
     }
-    
-    const videoData = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
+    const videoData = { ...results.metadatas[0], id: videoId };
     
     // Extract data from the video JSON
     const { analysis, inferred_insights = [] } = videoData;
